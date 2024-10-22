@@ -1,11 +1,11 @@
-export function debounce(action: (...args) => void, delayMs: number): typeof action {
+export const debounce = <A>(action: (args: A) => void, delayMs: number): typeof action => {
   let timeoutId: number;
 
-  return (...actionArgs) => {
+  return (actionArgs) => {
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
 
-    timeoutId = setTimeout(() => action(actionArgs), delayMs);
+    timeoutId = window.setTimeout(() => action(actionArgs), delayMs);
   };
-}
+};

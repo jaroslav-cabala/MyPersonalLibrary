@@ -1,13 +1,13 @@
-export function debounceSubsequent(action: (...args: any[]) => void, delayMs: number): typeof action {
+export const debounceSubsequent = <A>(action: (args: A) => void, delayMs: number): typeof action => {
   let timeoutId: number | undefined;
 
-  return (...actionArgs) => {
+  return (actionArgs) => {
     if (timeoutId) {
       return;
     }
 
     action(actionArgs);
 
-    timeoutId = setTimeout(() => timeoutId = undefined, delayMs);
+    timeoutId = window.setTimeout(() => (timeoutId = undefined), delayMs);
   };
-}
+};
