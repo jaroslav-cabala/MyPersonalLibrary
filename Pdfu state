@@ -1,0 +1,218 @@
+
+type ServerFile = {
+  fileId: string;
+  label: string;
+  size?: number;
+};
+
+type UploadStatus = "uploading" | "error";
+
+type FileUploadProps = {
+  title: string;
+  value?: ServerFile[];
+  onUpload: (file: File) => Promise<string>;
+  onDelete: (fileId: string) => Promise<void>;
+  disabled?: boolean;
+};
+
+export const PostDeclarationFileUpload = ({
+  title,
+  value,
+  onUpload,
+  onDelete,
+  disabled = false,
+}: FileUploadProps) => {
+  // Existing files, represented by backend metadata.
+  const [serverFiles, setServerFiles] = useState<ServerFile[]>(
+    () => value ?? []
+  );
+
+  // Actual File objects selected by the user.
+  const [acceptedFiles, setAcceptedFiles] = useState<File[]>([]);
+  const acceptedFilesRef = useRef<File[]>([]);
+
+  // Upload status for each selected File.
+  const [uploadStatuses, setUploadStatuses] = useState(
+    () => new Map<File, UploadStatus>()
+  );
+
+  // Prevent duplicate uploads of the same File.
+  const uploadingRef = useRef(new Set<File>());
+
+  // Track server-side deletions.
+  const deletingRef = useRef(new Set<string>());
+
+  const [error, setError] = useState<string | null>(null);
+
+  const updateAcceptedFiles = (files: File[]) => {
+    acceptedFilesRef.current = files;
+    setAcceptedFiles(files);
+  };
+
+  const updateUploadStatus = (
+    file: File,
+    status?: UploadStatus
+  ) => {
+    setUploadStatuses((previous) => {
+      const next = new Map(previous);
+
+      if (status) {
+        next.set(file, status);
+      } else {
+        next.delete(file);
+      }
+
+      return next;
+    });
+  };
+
+  const startUpload = async (file: File) => {
+    if (uploadingRef.current.has(file)) return;
+
+    uploadingRef.current.add(file);
+    updateUploadStatus(file, "uploading");
+
+    try {
+      const fileId = await onUpload(file);
+
+      const uploadedFile: ServerFile = {
+        fileId,
+        label: file.name,
+        size: file.size,
+      };
+
+      if (!acceptedFilesRef.current.includes(file)) {
+        // User removed the file while its upload was running.
+        // Upload succeeded, so delete it from the server.
+        try {
+          await onDelete(fileId);
+        } catch {
+          // Cleanup failed. Keep the server file visible
+          // so the user can try deleting it again.
+          setServerFiles((previous) => [
+            ...previous,
+            uploadedFile,
+          ]);
+
+          setError(`Could not delete ${file.name}`);
+        }
+
+        return;
+      }
+
+      // Upload succeeded: move local file to server files.
+      setServerFiles((previous) => [
+        ...previous,
+        uploadedFile,
+      ]);
+
+      updateAcceptedFiles(
+        acceptedFilesRef.current.filter((f) => f !== file)
+      );
+
+      updateUploadStatus(file);
+    } catch {
+      // Keep the File in acceptedFiles for Retry.
+      if (acceptedFilesRef.current.includes(file)) {
+        updateUploadStatus(file, "error");
+      }
+    } finally {
+      uploadingRef.current.delete(file);
+    }
+  };
+
+  const handleFileChange = (nextFiles: File[]) => {
+    const previousFiles = acceptedFilesRef.current;
+
+    const addedFiles = nextFiles.filter(
+      (file) => !previousFiles.includes(file)
+    );
+
+    const removedFiles = previousFiles.filter(
+      (file) => !nextFiles.includes(file)
+    );
+
+    updateAcceptedFiles(nextFiles);
+
+    removedFiles.forEach((file) => {
+      updateUploadStatus(file);
+    });
+
+    addedFiles.forEach((file) => {
+      if (uploadingRef.current.has(file)) {
+        updateUploadStatus(file, "uploading");
+      } else {
+        void startUpload(file);
+      }
+    });
+  };
+
+  const handleDeleteServerFile = async (
+    file: ServerFile
+  ) => {
+    if (deletingRef.current.has(file.fileId)) return;
+
+    deletingRef.current.add(file.fileId);
+
+    // Optimistically remove from the displayed list.
+    setServerFiles((previous) =>
+      previous.filter((f) => f.fileId !== file.fileId)
+    );
+
+    try {
+      await onDelete(file.fileId);
+    } catch {
+      // Restore when DELETE fails.
+      setServerFiles((previous) =>
+        previous.some((f) => f.fileId === file.fileId)
+          ? previous
+          : [...previous, file]
+      );
+
+      setError(`Could not delete ${file.label}`);
+    } finally {
+      deletingRef.current.delete(file.fileId);
+    }
+  };
+
+  const handleClearAll = () => {
+    // Remove local selections.
+    // Pending uploads will be cleaned up upon completion.
+    handleFileChange([]);
+
+    // Delete existing server files.
+    serverFiles.forEach((file) => {
+      void handleDeleteServerFile(file);
+    });
+  };
+
+  return (
+    <FileUploadRoot
+      disabled={disabled}
+      maxFiles={999}
+      acceptedFiles={acceptedFiles}
+      onFileChange={({ acceptedFiles }) =>
+        handleFileChange(acceptedFiles)
+      }
+      className="w-full border border-[#E6E6E6] rounded-2xl"
+    >
+      <Content
+        title={title}
+        disabled={disabled}
+        serverFiles={serverFiles}
+        uploadStatuses={uploadStatuses}
+        onRetry={(file) => void startUpload(file)}
+        onDeleteServerFile={(file) =>
+          void handleDeleteServerFile(file)
+        }
+        onClearAll={handleClearAll}
+      />
+
+      {error && (
+        <div role="alert" className="px-4 pb-3 text-red-600">
+          {error}
+        </div>
+      )}
+    </FileUploadRoot>
+  );
+};
