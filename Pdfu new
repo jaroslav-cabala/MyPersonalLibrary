@@ -1,0 +1,215 @@
+
+import { useRef, useState } from "react";
+import {
+  FileUploadRoot,
+  FileUploadTrigger,
+  FileUploadItem,
+  FileUploadItemDeleteTrigger,
+  FileUploadItemGroup,
+  useFileUploadContext,
+  Flex,
+  Button,
+  Image,
+} from "cardif-ui-library";
+import { formatBytes } from "src/utils";
+
+// Metadata returned by the backend.
+// documentId may also exist on the parent objects.
+type ServerFile = {
+  fileId: string;
+  label: string;
+  size?: number;
+};
+
+type UploadStatus = "uploading" | "error";
+
+type FileUploadProps = {
+  title: string;
+  value?: ServerFile[];
+  onUpload: (file: File) => Promise<string>;
+  onDelete: (fileId: string) => Promise<void>;
+  disabled?: boolean;
+  onLocalFilesChange?: (hasFiles: boolean) => void;
+};
+
+export const PostDeclarationFileUpload = ({
+  title,
+  value = [],
+  onUpload,
+  onDelete,
+  disabled = false,
+  onLocalFilesChange,
+}: FileUploadProps) => {
+  // Only local files are owned by this component.
+  const [acceptedFiles, setAcceptedFiles] = useState<File[]>([]);
+  const acceptedFilesRef = useRef<File[]>([]);
+
+  const [uploadStatuses, setUploadStatuses] = useState(
+    () => new Map<File, UploadStatus>()
+  );
+
+  const uploadingRef = useRef(new Set<File>());
+  const deletingRef = useRef(new Set<string>());
+
+  const [deletingIds, setDeletingIds] = useState(
+    () => new Set<string>()
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const updateAcceptedFiles = (files: File[]) => {
+    acceptedFilesRef.current = files;
+    setAcceptedFiles(files);
+    onLocalFilesChange?.(files.length > 0);
+  };
+
+  const updateUploadStatus = (
+    file: File,
+    status?: UploadStatus
+  ) => {
+    setUploadStatuses((previous) => {
+      const next = new Map(previous);
+
+      if (status) {
+        next.set(file, status);
+      } else {
+        next.delete(file);
+      }
+
+      return next;
+    });
+  };
+
+  const startUpload = async (file: File) => {
+    if (
+      uploadingRef.current.has(file) ||
+      !acceptedFilesRef.current.includes(file)
+    ) {
+      return;
+    }
+
+    uploadingRef.current.add(file);
+    updateUploadStatus(file, "uploading");
+
+    try {
+      // Parent uploads and adds the result to its serverFiles.
+      const fileId = await onUpload(file);
+
+      if (acceptedFilesRef.current.includes(file)) {
+        // Success: remove the local File.
+        // Its metadata is now provided through `value`.
+        updateAcceptedFiles(
+          acceptedFilesRef.current.filter((f) => f !== file)
+        );
+        updateUploadStatus(file);
+      } else {
+        // The user removed this File while uploading.
+        // The upload finished, so clean up the server copy.
+        try {
+          await onDelete(fileId);
+        } catch {
+          // Parent retains the server file after failed delete.
+          setError(`Could not delete ${file.name}`);
+        }
+      }
+    } catch {
+      // Upload failed. Keep the File for Retry.
+      if (acceptedFilesRef.current.includes(file)) {
+        updateUploadStatus(file, "error");
+      }
+    } finally {
+      uploadingRef.current.delete(file);
+    }
+  };
+
+  const handleFileChange = (nextFiles: File[]) => {
+    const previousFiles = acceptedFilesRef.current;
+
+    const addedFiles = nextFiles.filter(
+      (file) => !previousFiles.includes(file)
+    );
+    const removedFiles = previousFiles.filter(
+      (file) => !nextFiles.includes(file)
+    );
+
+    updateAcceptedFiles(nextFiles);
+
+    removedFiles.forEach((file) => {
+      updateUploadStatus(file);
+    });
+
+    addedFiles.forEach((file) => {
+      if (uploadingRef.current.has(file)) {
+        updateUploadStatus(file, "uploading");
+      } else {
+        void startUpload(file);
+      }
+    });
+  };
+
+  const handleDeleteServerFile = async (file: ServerFile) => {
+    if (deletingRef.current.has(file.fileId)) return;
+
+    deletingRef.current.add(file.fileId);
+    setDeletingIds((previous) =>
+      new Set(previous).add(file.fileId)
+    );
+    setError(null);
+
+    try {
+      // Parent removes the file from its state
+      // only after the DELETE request succeeds.
+      await onDelete(file.fileId);
+    } catch {
+      // No rollback needed: `value` still contains the file.
+      setError(`Could not delete ${file.label}`);
+    } finally {
+      deletingRef.current.delete(file.fileId);
+      setDeletingIds((previous) => {
+        const next = new Set(previous);
+        next.delete(file.fileId);
+        return next;
+      });
+    }
+  };
+
+  const handleClearAll = () => {
+    // Discard all selected local files.
+    handleFileChange([]);
+
+    // Delete every server file.
+    value.forEach((file) => {
+      void handleDeleteServerFile(file);
+    });
+  };
+
+  return (
+    <FileUploadRoot
+      disabled={disabled}
+      maxFiles={999}
+      acceptedFiles={acceptedFiles}
+      onFileChange={({ acceptedFiles }) =>
+        handleFileChange(acceptedFiles)
+      }
+      className="w-full border border-[#E6E6E6] rounded-2xl"
+    >
+      <Content
+        title={title}
+        disabled={disabled}
+        serverFiles={value}
+        uploadStatuses={uploadStatuses}
+        deletingIds={deletingIds}
+        onRetry={(file) => void startUpload(file)}
+        onDeleteServerFile={(file) =>
+          void handleDeleteServerFile(file)
+        }
+        onClearAll={handleClearAll}
+      />
+
+      {error && (
+        <div role="alert" className="px-4 pb-3 text-red-600">
+          {error}
+        </div>
+      )}
+    </FileUploadRoot>
+  );
+};
