@@ -1,0 +1,197 @@
+
+import { useRef, useState } from "react";
+
+export type ServerFile = {
+  fileId: string;
+  label: string;
+  size?: number;
+};
+
+export type LocalFile = {
+  file: File;
+  status: "uploading" | "error";
+};
+
+type Options = {
+  initialFiles: ServerFile[];
+  onUpload: (file: File) => Promise<string>;
+  onDelete: (fileId: string) => Promise<void>;
+  onLocalFilesChange?: (hasFiles: boolean) => void;
+};
+
+export const useDocumentFiles = ({
+  initialFiles,
+  onUpload,
+  onDelete,
+  onLocalFilesChange,
+}: Options) => {
+  const [serverFiles, setServerFiles] = useState(initialFiles);
+  const [localFiles, setLocalFiles] = useState<LocalFile[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  // Latest selected files, accessible inside async callbacks.
+  const selectedRef = useRef<File[]>([]);
+
+  // Prevent concurrent requests for the same file.
+  const uploadingRef = useRef(new Set<File>());
+  const deletingRef = useRef(new Set<string>());
+
+  const addServerFile = (file: ServerFile) => {
+    setServerFiles((previous) =>
+      previous.some((f) => f.fileId === file.fileId)
+        ? previous
+        : [...previous, file]
+    );
+  };
+
+  const updateSelection = (files: File[]): File[] => {
+    const added = files.filter(
+      (file) => !selectedRef.current.includes(file)
+    );
+
+    selectedRef.current = files;
+
+    setLocalFiles((previous) =>
+      files.map(
+        (file) =>
+          previous.find((item) => item.file === file) ?? {
+            file,
+            status: "uploading",
+          }
+      )
+    );
+
+    onLocalFilesChange?.(files.length > 0);
+
+    return added;
+  };
+
+  const upload = async (file: File): Promise<void> => {
+    if (uploadingRef.current.has(file)) return;
+
+    uploadingRef.current.add(file);
+
+    setLocalFiles((previous) =>
+      previous.map((item) =>
+        item.file === file
+          ? { ...item, status: "uploading" }
+          : item
+      )
+    );
+
+    try {
+      let fileId: string;
+
+      try {
+        fileId = await onUpload(file);
+      } catch {
+        // Keep failed files available for retry.
+        if (selectedRef.current.includes(file)) {
+          setLocalFiles((previous) =>
+            previous.map((item) =>
+              item.file === file
+                ? { ...item, status: "error" }
+                : item
+            )
+          );
+        }
+        return;
+      }
+
+      const serverFile: ServerFile = {
+        fileId,
+        label: file.name,
+        size: file.size,
+      };
+
+      if (selectedRef.current.includes(file)) {
+        // Upload completed successfully.
+        addServerFile(serverFile);
+
+        updateSelection(
+          selectedRef.current.filter((f) => f !== file)
+        );
+      } else {
+        // File was removed while its upload was in progress.
+        try {
+          await onDelete(fileId);
+        } catch {
+          // Cleanup failed; retain the server file for deletion.
+          addServerFile(serverFile);
+          setError(`Could not delete ${file.name}`);
+        }
+      }
+    } finally {
+      uploadingRef.current.delete(file);
+    }
+  };
+
+  const handleFileChange = (files: File[]) => {
+    const added = updateSelection(files);
+
+    added.forEach((file) => {
+      void upload(file);
+    });
+  };
+
+  const deleteServerFile = async (
+    file: ServerFile
+  ): Promise<void> => {
+    if (deletingRef.current.has(file.fileId)) return;
+
+    deletingRef.current.add(file.fileId);
+    setError(null);
+
+    const index = serverFiles.findIndex(
+      (f) => f.fileId === file.fileId
+    );
+
+    // Optimistic removal.
+    setServerFiles((previous) =>
+      previous.filter((f) => f.fileId !== file.fileId)
+    );
+
+    try {
+      await onDelete(file.fileId);
+    } catch {
+      // Restore the file after a failed DELETE.
+      setServerFiles((previous) => {
+        if (previous.some((f) => f.fileId === file.fileId)) {
+          return previous;
+        }
+
+        const next = [...previous];
+        const position = Math.max(
+          0,
+          Math.min(index, next.length)
+        );
+
+        next.splice(position, 0, file);
+        return next;
+      });
+
+      setError(`Could not delete ${file.label}`);
+    } finally {
+      deletingRef.current.delete(file.fileId);
+    }
+  };
+
+  const clearAll = () => {
+    updateSelection([]);
+
+    serverFiles.forEach((file) => {
+      void deleteServerFile(file);
+    });
+  };
+
+  return {
+    serverFiles,
+    localFiles,
+    acceptedFiles: localFiles.map(({ file }) => file),
+    error,
+    handleFileChange,
+    retry: upload,
+    deleteServerFile,
+    clearAll,
+  };
+};
