@@ -1,0 +1,188 @@
+
+import type {
+  LocalFile,
+  ServerFile,
+} from "./useDocumentFiles";
+
+type ContentProps = {
+  title: string;
+  disabled: boolean;
+  serverFiles: ServerFile[];
+  localFiles: LocalFile[];
+  error: string | null;
+  retry: (file: File) => Promise<void>;
+  deleteServerFile: (file: ServerFile) => Promise<void>;
+  clearAll: () => void;
+};
+
+const Content = ({
+  title,
+  disabled,
+  serverFiles,
+  localFiles,
+  error,
+  retry,
+  deleteServerFile,
+  clearAll,
+}: ContentProps) => {
+  const totalCount = serverFiles.length + localFiles.length;
+
+  if (totalCount === 0) {
+    return (
+      <FileUploadTrigger asChild>
+        <Button variant="unstyled" className="w-full p-4 h-auto">
+          <FileUploadTriggerContent title={title} />
+        </Button>
+      </FileUploadTrigger>
+    );
+  }
+
+  // Only show a total size when every file has a known size.
+  const sizesKnown = serverFiles.every(
+    (file) => file.size !== undefined
+  );
+
+  const totalSize = sizesKnown
+    ? serverFiles.reduce(
+        (total, file) => total + (file.size ?? 0),
+        0
+      ) +
+      localFiles.reduce(
+        (total, item) => total + item.file.size,
+        0
+      )
+    : undefined;
+
+  const summary = [
+    `${serverFiles.length} uploaded`,
+    localFiles.length > 0
+      ? `${localFiles.length} selected`
+      : null,
+    totalSize !== undefined ? formatBytes(totalSize) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <Flex direction="column" gap="4" className="w-full p-4">
+      <UploadedFilesDetailTitle
+        title={title}
+        summary={summary}
+        clearFilesCallback={clearAll}
+        disabled={disabled}
+      />
+
+      <FileUploadItemGroup className="px-6 gap-4">
+        {/* Files already stored on the server */}
+        {serverFiles.map((file) => (
+          <Flex
+            key={file.fileId}
+            gap="4"
+            className="w-full items-center"
+          >
+            <Image
+              src="/document.svg"
+              className="w-6 h-6 shrink-0"
+            />
+
+            <Flex
+              direction="column"
+              gap="1"
+              className="min-w-0 flex-1"
+            >
+              <span className="break-words">{file.label}</span>
+
+              {file.size !== undefined && (
+                <span className="text-xs text-[#666666]">
+                  {formatBytes(file.size)}
+                </span>
+              )}
+            </Flex>
+
+            <Button
+              variant="unstyled"
+              disabled={disabled}
+              className="shrink-0 ml-auto"
+              aria-label={`Delete ${file.label}`}
+              onClick={() => void deleteServerFile(file)}
+            >
+              <Image src="/cancel.svg" />
+            </Button>
+          </Flex>
+        ))}
+
+        {/* Newly selected files, including failed uploads */}
+        {localFiles.map(({ file, status }) => (
+          <FileUploadItem
+            key={`${file.name}-${file.size}-${file.lastModified}`}
+            file={file}
+            className="gap-4 items-center border-none p-0"
+          >
+            <Image
+              src="/document.svg"
+              className="w-6 h-6 shrink-0"
+            />
+
+            <Flex
+              direction="column"
+              gap="1"
+              className="min-w-0 flex-1"
+            >
+              <span className="break-words font-medium">
+                {file.name}
+              </span>
+
+              <span className="text-xs text-[#666666]">
+                {formatBytes(file.size)}
+              </span>
+
+              {status === "uploading" && (
+                <span className="text-xs">Uploading...</span>
+              )}
+
+              {status === "error" && (
+                <Flex gap="2" className="items-center">
+                  <span className="text-xs text-red-600">
+                    Upload failed
+                  </span>
+
+                  <Button
+                    type="button"
+                    size="xs"
+                    disabled={disabled}
+                    onClick={() => void retry(file)}
+                  >
+                    Retry
+                  </Button>
+                </Flex>
+              )}
+            </Flex>
+
+            <FileUploadItemDeleteTrigger
+              disabled={disabled}
+              className="shrink-0 ml-auto"
+            >
+              <Image src="/cancel.svg" />
+            </FileUploadItemDeleteTrigger>
+          </FileUploadItem>
+        ))}
+
+        <FileUploadTrigger asChild>
+          <Button
+            variant="unstyled"
+            disabled={disabled}
+            className="w-full border-none p-0 h-auto"
+          >
+            <FileUploadTriggerContent />
+          </Button>
+        </FileUploadTrigger>
+      </FileUploadItemGroup>
+
+      {error && (
+        <span role="alert" className="text-sm text-red-600">
+          {error}
+        </span>
+      )}
+    </Flex>
+  );
+};
